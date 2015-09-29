@@ -1,0 +1,22 @@
+--- pseudo_inst.cc
++++ pseudo_inst.cc
+@@ -74,6 +74,7 @@
+ #include "sim/stats.hh"
+ #include "sim/system.hh"
+ #include "sim/vptr.hh"
++#include "dev/ethertap.hh"
+ 
+ using namespace std;
+ 
+@@ -504,7 +505,10 @@
+     Tick when = curTick() + delay * SimClock::Int::ns;
+     Tick repeat = period * SimClock::Int::ns;
+ 
+-    exitSimLoop("checkpoint", 0, when, repeat);
++    if (pdgem5_ckpt_flag.size())
++        pdgem5_ckpt_flag[0] = true;
++    else
++        exitSimLoop("checkpoint", 0, when, repeat);
+ }
+ 
+ uint64_t

@@ -1,0 +1,14 @@
+--- Ethernet.py
++++ Ethernet.py
+@@ -85,6 +85,11 @@
+     bufsz = Param.Int(10000, "tap buffer size")
+     dump = Param.EtherDump(NULL, "dump object")
+     port = Param.UInt16(3500, "tap port")
++    tap = MasterPort("EtherTap interface")
++    sync_quantum = Param.Latency('1us', "synchronization rate")
++    server = Param.Bool(False, "is this server or client tap")
++    server_ip = Param.String("127.0.0.1","server IP address")
++    num_nodes = Param.Int(4, "num of nodes in pd-gem5")
+ 
+ class EtherDump(SimObject):
+     type = 'EtherDump'

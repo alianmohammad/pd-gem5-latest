@@ -1,0 +1,437 @@
+# HG changeset patch
+# Parent c2032f54fc3ceef09d8fd3287f8aff1c50460a14
+
+diff -r c2032f54fc3c configs/common/FSConfig.py
+--- a/configs/common/FSConfig.py	Mon Aug 10 01:49:28 2015 -0500
++++ b/configs/common/FSConfig.py	Mon Aug 10 01:50:44 2015 -0500
+@@ -256,7 +256,7 @@
+         self.ethertap0 = EtherTap(server = False,
+                                   port = options.switch_tap_port,
+                                   server_ip = options.switch_tap_ip,
+-                                  poll_rate = int(options.sync.split(',')[0])/2)
++                                  sync_quantum = options.sync_quantum)
+         # instantiate a "pd-gem5 connector" Etherlink (mode 2) and pass along speed
+         # and latency information of NIC and Link
+         self.etherlink = EtherLink(mode = 1,
+diff -r c2032f54fc3c configs/common/Options.py
+--- a/configs/common/Options.py	Mon Aug 10 01:49:28 2015 -0500
++++ b/configs/common/Options.py	Mon Aug 10 01:50:44 2015 -0500
+@@ -62,6 +62,7 @@
+                       help = """
+                       enable synchronization among nodes
+                       <quantum size, sync port, sync host>""")
++    parser.add_option("--sync-quantum",type="string",default='10us')
+     parser.add_option("--eth", action="store_true")
+     parser.add_option("--num-nodes",type="int",default=1)
+     parser.add_option("--switch-tap-ip",type="string",default="127.0.0.1",
+diff -r c2032f54fc3c configs/example/sw.py
+--- a/configs/example/sw.py	Mon Aug 10 01:49:28 2015 -0500
++++ b/configs/example/sw.py	Mon Aug 10 01:50:44 2015 -0500
+@@ -29,7 +29,7 @@
+ 
+     # instantiate ethertap objects in server mode
+     switch.porttap = [EtherTap(server = True,
+-                               poll_rate = int(options.sync.split(',')[0])/2)
++                               sync_quantum = options.sync_quantum)
+                       for i in xrange(options.num_nodes)]
+     for (i, link) in enumerate(switch.portlink):
+         link.int1 = switch.porttap[i].tap
+diff -r c2032f54fc3c src/dev/Ethernet.py
+--- a/src/dev/Ethernet.py	Mon Aug 10 01:49:28 2015 -0500
++++ b/src/dev/Ethernet.py	Mon Aug 10 01:50:44 2015 -0500
+@@ -103,9 +103,10 @@
+     dump = Param.EtherDump(NULL, "dump object")
+     port = Param.UInt16(3500, "tap port")
+     tap = MasterPort("EtherTap interface")
+-    sync_quantum = Param.UInt64(1000000, "synchronization rate")
++    sync_quantum = Param.Latency('1us', "synchronization rate")
+     server = Param.Bool(False, "is this server or client tap")
+     server_ip = Param.String("127.0.0.1","server IP address")
++    num_nodes = Param.Int(4, "num of nodes in pd-gem5")
+ 
+ class EtherDump(SimObject):
+     type = 'EtherDump'
+diff -r c2032f54fc3c src/dev/ethertap.cc
+--- a/src/dev/ethertap.cc	Mon Aug 10 01:49:28 2015 -0500
++++ b/src/dev/ethertap.cc	Mon Aug 10 01:50:44 2015 -0500
+@@ -51,16 +51,20 @@
+ #include "dev/etherint.hh"
+ #include "dev/etherpkt.hh"
+ #include "dev/ethertap.hh"
++#include "sim/sim_exit.hh"
+ #include <fcntl.h>
+ #include <ifaddrs.h>
+ #include <arpa/inet.h>
+ #include <iostream>
++#include <sys/ioctl.h>
+ 
+ using namespace std;
+ #define SIM 0
+ #define RECV 1
+ #define SEND 2
+-
++#define SIM_MSG 1
++#define CKPT_MSG 2
++vector<bool> pdgem5_ckpt_flag;
+ /**
+  */
+ class TapListener
+@@ -133,8 +137,8 @@
+         if (ifAddrStruct!=NULL)
+             freeifaddrs(ifAddrStruct);
+      }
+-    event = new Event(this, listener.getfdStatic(), POLLIN|POLLERR);
+-    pollQueue.schedule(event);
++    //event = new Event(this, listener.getfdStatic(), POLLIN|POLLERR);
++    //pollQueue.schedule(event);
+ }
+ 
+ void
+@@ -155,6 +159,7 @@
+     int sfd = listener.acceptTap(true);
+      if (sfd != -1)
+          tap->attach(sfd);
++    DPRINTF(Ethernet, "EtherTap attached Attached\n");
+ }
+ 
+ /**
+@@ -189,7 +194,7 @@
+      : EtherObject(p), socket(-1), buflen(p->bufsz), dump(p->dump),
+       interface(NULL), syncQuantum(p->sync_quantum),
+       inSwitchTap(p->server), syncMsgReceived(false), txEvent(this),
+-      tapInEvent(this), recvSyncEvent(this), sendSyncEvent(this),
++      tapInEvent(this), recvSyncEvent(this), sendSyncEvent(this), acceptEvent(this),
+       attached(false)
+ {
+      if (ListenSocket::allDisabled())
+@@ -197,12 +202,16 @@
+ 
+      buffer = new char[buflen];
+     static bool flag = true;
++    tapId = pdgem5_ckpt_flag.size();
++    pdgem5_ckpt_flag.push_back(false);
++    DPRINTF(Ethernet, "EtherTap const syncQuantum=%lu\n", syncQuantum);
+     // if this is a tap connection in switch
+     if (inSwitchTap) {
+         listener = new TapListener(this, p->port);
+         listener->listen(flag);
++        schedule(sendSyncEvent, curTick());
++        schedule(acceptEvent, curTick());
+         flag = false;
+-        schedule(sendSyncEvent, curTick());
+     }
+     // if this is a tap connection in nodes
+     else {
+@@ -215,9 +224,14 @@
+     pollQuantum = syncQuantum / 2;
+     if (syncQuantum > 10000000)
+         pollQuantum = 5000000;
+-
+ }
+-
++void
++EtherTap::accept()
++{
++    DPRINTF(Ethernet, "Call blocking accept\n");
++    listener->accept();
++    DPRINTF(Ethernet, "Call blocking accept finished\n");
++}
+ EtherTap::~EtherTap()
+ {
+     if (buffer)
+@@ -238,8 +252,9 @@
+     socket = fd;
+     DPRINTF(Ethernet, "EtherTap attached\n");
+     attached = true;
+-    int nonBlocking = 1;
+-    fcntl(socket, F_SETFL, O_NONBLOCK, nonBlocking);
++//    int nonBlocking = 1;
++//    fcntl(socket, F_SETFL, O_NONBLOCK, nonBlocking);
++    DPRINTF(Ethernet, "EtherTap attached1\n");
+     if (!tapInEvent.scheduled())
+         schedule(tapInEvent, curTick() + pollQuantum);
+ }
+@@ -258,8 +273,27 @@
+ void
+ EtherTap::sendSync()
+ {
+-    // send a unique number as sync message, in this case 1
+-    uint32_t sync_msg = htonl(1);
++    int msg = SIM_MSG;
++    // @node:if ckpt_m5Ops is executed during this quantum simulation
++    //       send a CKPT_MSG to swtich
++    // @switch:if peer is not initiator of ckpt, send ckpt_msg to it
++    if (pdgem5_ckpt_flag[tapId]) {
++        msg = CKPT_MSG;
++        pdgem5_ckpt_flag[tapId] = false;
++        // dump checkpoint at switch when it sends CKPT_MSG to the last peer gem5 process
++        if (inSwitchTap) {
++            int remaining_taps = 0;
++            for (int i = 0; i < pdgem5_ckpt_flag.size(); i ++) {
++                if (pdgem5_ckpt_flag[i])
++                    remaining_taps ++;
++            }
++            if (remaining_taps == 0)
++                exitSimLoop("checkpoint");
++        }
++        DPRINTF(Ethernet, "set message to ckpt\n");
++    }
++    DPRINTF(Ethernet, "send sync\n");
++    uint32_t sync_msg = htonl(msg);
+     ssize_t ret = write(socket, &sync_msg, sizeof(sync_msg));
+     assert(ret == sizeof(sync_msg));
+     if (inSwitchTap) {
+@@ -311,34 +345,67 @@
+ EtherTap::process()
+ {
+     char *data = buffer + sizeof(uint32_t);
++    //DPRINTF(Ethernet, "in process!");
++    if (buffer_offset < data_len + sizeof(uint32_t)) {
++        fd_set fds;
++        struct timeval timeout;
++        int rc;
+ 
+-    if (buffer_offset < data_len + sizeof(uint32_t)) {
+-        int len = read(socket, buffer + buffer_offset, buflen - buffer_offset);
+-        if (len <= 0) {
+-            if (!tapInEvent.scheduled())
+-                schedule(tapInEvent, curTick() + pollQuantum);
+-            return;
+-        }
++        timeout.tv_sec = 0;
++        timeout.tv_usec = 0;
++        FD_ZERO(&fds);
++        FD_SET(socket, &fds);
++        rc = select(sizeof(fds), &fds, NULL, NULL, &timeout);
++        int len = -1;
++        if (rc > 0 || (syncState == RECV && !syncMsgReceived)) {
++            len = read(socket, buffer + buffer_offset, buflen - buffer_offset);
++            DPRINTF(Ethernet, "rc=%d, len=%d \n",rc, len);
++            if (len > 0) {
+ 
+-        buffer_offset += len;
++                buffer_offset += len;
+ 
+-        if (data_len == 0)
+-            data_len = ntohl(*(uint32_t *)buffer);
+-        // if it's a sync message
+-        if (data_len == 1) {
+-            syncMsgReceived = true;
+-            data_len = 0;
+-            // clear buffer from sync message
+-            buffer_offset -= sizeof(data_len);
+-            memmove(buffer, buffer + sizeof(data_len), buffer_offset);
++                if (data_len == 0)
++                    data_len = ntohl(*(uint32_t *)buffer);
++                // if it's a sync message
++                if (data_len == SIM_MSG) {
++                    syncMsgReceived = true;
++                    data_len = 0;
++                    // clear buffer from sync message
++                    buffer_offset -= sizeof(data_len);
++                    memmove(buffer, buffer + sizeof(data_len), buffer_offset);
+ 
+-            // if the sync message in not the only data that we've read
+-            if (buffer_offset != 0) {
+-                data_len = ntohl(*(uint32_t *)buffer);
++                    // if the sync message in not the only data that we've read
++                    if (buffer_offset != 0) {
++                        data_len = ntohl(*(uint32_t *)buffer);
++                    }
++                } else if (data_len == CKPT_MSG) {
++                    DPRINTF(Ethernet, "ckpt received");
++                    syncMsgReceived = true;
++                    data_len = 0;
++                    // clear buffer from sync message
++                    buffer_offset -= sizeof(data_len);
++                    memmove(buffer, buffer + sizeof(data_len), buffer_offset);
++
++                    // if the sync message in not the only data that we've read
++                    if (buffer_offset != 0) {
++                        data_len = ntohl(*(uint32_t *)buffer);
++                    }
++
++                    // we should not send CKPT_MSG to gem5 process that has executed
++                    // M5_CKPT instruction, set flags accordingly.
++                    for (int i = 0; i < pdgem5_ckpt_flag.size(); i++) {
++                        pdgem5_ckpt_flag[i] = true;
++                    }
++                }
++
++                DPRINTF(Ethernet, "Received data from peer: len=%d buffer_offset=%d "
++                        "data_len=%d\n", len, buffer_offset, data_len);
++            } else {
++                DPRINTF(Ethernet, "Exit sim loop rc=%d, len=%d \n",rc, len);
++                exitSimLoop("pd-gem5 exit");
++                return;
+             }
+         }
+-        DPRINTF(Ethernet, "Received data from peer: len=%d buffer_offset=%d "
+-                "data_len=%d\n", len, buffer_offset, data_len);
+     }
+ 
+     while (data_len != 0 && buffer_offset >= data_len + sizeof(uint32_t)) {
+@@ -391,12 +458,16 @@
+         case RECV:
+             if (syncMsgReceived) {
+                 syncState = SIM;
++                syncMsgReceived = false;
+                 if (inSwitchTap) {
+-                    DPRINTF(Ethernet, "sync message received, send back a go ahead\n");
++                    DPRINTF(Ethernet, "sync message received, send back a go ahead or ckpt msg\n");
+                     // peer gem5 process
+                     sendSync();
+-                    schedule(recvSyncEvent, curTick() + syncQuantum);
+                 } else {
++                    if (pdgem5_ckpt_flag[tapId]) {
++                        DPRINTF(Ethernet, "exit with checkpoint\n");
++                        exitSimLoop("checkpoint");
++                    }
+                     DPRINTF(Ethernet, "sync message received, start sim\n");
+                     // othewise, schedule a sendSyncEvent @ curTick + Quantum
+                     // and return (let simulation goes on)
+@@ -406,7 +477,9 @@
+                 }
+                 return;
+             }
+-            process();
++            // @todo, to allow slack sim, replace this with a schedule statement with lower priority that the events already in the eventq
++            schedule(recvSyncEvent, curTick());
++            //process();
+         default:
+             return;
+     }
+@@ -456,7 +529,26 @@
+     SERIALIZE_ARRAY(buffer, buflen);
+     SERIALIZE_SCALAR(buffer_offset);
+     SERIALIZE_SCALAR(data_len);
++    bool in_event_scheduled = tapInEvent.scheduled();
++    paramOut(cp, "in_event_scheduled", in_event_scheduled);
++    if (in_event_scheduled) {
++        Tick event_time = tapInEvent.when();
++        paramOut(cp, "in_event_time", event_time);
++    }
+ 
++    bool recv_event_scheduled = recvSyncEvent.scheduled();
++    paramOut(cp, "recv_event_scheduled", recv_event_scheduled);
++    if (recv_event_scheduled) {
++        Tick event_time = recvSyncEvent.when();
++        paramOut(cp, "recv_event_time", event_time);
++    }
++
++    bool send_event_scheduled = sendSyncEvent.scheduled();
++    paramOut(cp, "send_event_scheduled", send_event_scheduled);
++    if (send_event_scheduled) {
++        Tick event_time = sendSyncEvent.when();
++        paramOut(cp, "send_event_time", event_time);
++    }
+ }
+ 
+ void
+@@ -468,19 +560,41 @@
+     UNSERIALIZE_SCALAR(buffer_offset);
+     UNSERIALIZE_SCALAR(data_len);
+ 
++    if (inSwitchTap) {
++        if (acceptEvent.scheduled())
++            deschedule(acceptEvent);
++        schedule(acceptEvent, curTick());
++    }
+     if (tapInEvent.scheduled())
+         deschedule(tapInEvent);
+-    schedule(tapInEvent, curTick() + pollQuantum);
+-    if (inSwitchTap) {
+-        if (sendSyncEvent.scheduled())
+-            deschedule(sendSyncEvent);
+-        schedule(sendSyncEvent, curTick());
+-    } else {
+-        if (recvSyncEvent.scheduled())
+-            deschedule(recvSyncEvent);
+-        schedule(recvSyncEvent, curTick());
++    if (recvSyncEvent.scheduled())
++        deschedule(recvSyncEvent);
++    if (sendSyncEvent.scheduled())
++        deschedule(sendSyncEvent);
++
++    bool in_event_scheduled;
++    paramIn(cp, "in_event_scheduled", in_event_scheduled);
++    if (in_event_scheduled) {
++        Tick event_time;
++        paramIn(cp, "in_event_time", event_time);
++        schedule(tapInEvent, event_time);
+     }
+ 
++    bool recv_event_scheduled;
++    paramIn(cp, "recv_event_scheduled", recv_event_scheduled);
++    if (recv_event_scheduled) {
++        Tick event_time;
++        paramIn(cp, "recv_event_time", event_time);
++        schedule(recvSyncEvent, event_time);
++    }
++
++    bool send_event_scheduled;
++    paramIn(cp, "send_event_scheduled", send_event_scheduled);
++    if (send_event_scheduled) {
++        Tick event_time;
++        paramIn(cp, "send_event_time", event_time);
++        schedule(sendSyncEvent, event_time);
++    }
+ }
+ 
+ //=====================================================================
+diff -r c2032f54fc3c src/dev/ethertap.hh
+--- a/src/dev/ethertap.hh	Mon Aug 10 01:49:28 2015 -0500
++++ b/src/dev/ethertap.hh	Mon Aug 10 01:50:44 2015 -0500
+@@ -49,7 +49,7 @@
+ class TapListener;
+ class EtherTapInt;
+ class TapConnector;
+-
++extern std::vector<bool> pdgem5_ckpt_flag;
+ /*
+  * Interface to connect a simulated ethernet device to the real world
+  */
+@@ -80,9 +80,12 @@
+     bool inSwitchTap;
+     bool syncMsgReceived;
+     int syncState;
++    bool ckptInit;
++    int tapId;
+ 
+     void sendSync();
+     void recvSync();
++    void accept();
+     void process();
+     void enqueue(EthPacketData *packet);
+     void retransmit();
+@@ -106,6 +109,7 @@
+     EventWrapper<EtherTap, &EtherTap::process> tapInEvent;
+     EventWrapper<EtherTap, &EtherTap::recvSync> recvSyncEvent;
+     EventWrapper<EtherTap, &EtherTap::sendSync> sendSyncEvent;
++    EventWrapper<EtherTap, &EtherTap::accept> acceptEvent;
+     bool attached;
+ 
+   public:
+diff -r c2032f54fc3c src/sim/pseudo_inst.cc
+--- a/src/sim/pseudo_inst.cc	Mon Aug 10 01:49:28 2015 -0500
++++ b/src/sim/pseudo_inst.cc	Mon Aug 10 01:50:44 2015 -0500
+@@ -74,6 +74,7 @@
+ #include "sim/stats.hh"
+ #include "sim/system.hh"
+ #include "sim/vptr.hh"
++#include "dev/ethertap.hh"
+ 
+ using namespace std;
+ 
+@@ -504,7 +505,10 @@
+     Tick when = curTick() + delay * SimClock::Int::ns;
+     Tick repeat = period * SimClock::Int::ns;
+ 
+-    exitSimLoop("checkpoint", 0, when, repeat);
++    if (pdgem5_ckpt_flag.size())
++        pdgem5_ckpt_flag[0] = true;
++    else
++        exitSimLoop("checkpoint", 0, when, repeat);
+ }
+ 
+ uint64_t

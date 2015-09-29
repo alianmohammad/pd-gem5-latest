@@ -1,0 +1,26 @@
+--- socket.cc
++++ socket.cc
+@@ -26,6 +38,7 @@
+  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+  *
+  * Authors: Nathan Binkert
++ *          Mohammad Alian
+  */
+ 
+ #include <netinet/in.h>
+@@ -33,6 +46,7 @@
+ #include <sys/socket.h>
+ #include <sys/types.h>
+ #include <unistd.h>
++#include <arpa/inet.h>
+ 
+ #include <cerrno>
+ 
+@@ -44,6 +58,7 @@
+ 
+ bool ListenSocket::listeningDisabled = false;
+ bool ListenSocket::anyListening = false;
++int ListenSocket::fdStatic;
+ 
+ void
+ ListenSocket::disableAll()

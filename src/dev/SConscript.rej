@@ -1,0 +1,11 @@
+--- SConscript
++++ SConscript
+@@ -105,6 +105,8 @@
+ DebugFlag('Intel8254Timer')
+ DebugFlag('MC146818')
+ DebugFlag('PCIDEV')
++DebugFlag('Pdgem5')
++DebugFlag('Pdgem5Sync')
+ DebugFlag('PciConfigAll')
+ DebugFlag('SimpleDisk')
+ DebugFlag('SimpleDiskData')

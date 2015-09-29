@@ -1,0 +1,11 @@
+--- etherlink.cc
++++ etherlink.cc
+@@ -99,7 +98,7 @@
+     rx->setRxInt(this);
+ }
+ 
+-EtherLink::Link::Link(const string &name, EtherLink *p, int num,
++EtherLink::Link::Link(const string &name, EtherObject *p, int num,
+                       double rate, Tick delay, Tick delay_var, EtherDump *d)
+     : objName(name), parent(p), number(num), txint(NULL), rxint(NULL),
+       ticksPerByte(rate), linkDelay(delay), delayVar(delay_var), dump(d),

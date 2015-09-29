@@ -1,0 +1,11 @@
+--- etherlink.hh
++++ etherlink.hh
+@@ -87,7 +89,7 @@
+         void txComplete(EthPacketPtr packet);
+ 
+       public:
+-        Link(const std::string &name, EtherLink *p, int num,
++        Link(const std::string &name, EtherObject *p, int num,
+              double rate, Tick delay, Tick delay_var, EtherDump *dump);
+         ~Link() {}
+ 

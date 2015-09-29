@@ -1,0 +1,66 @@
+--- socket.hh
++++ socket.hh
+@@ -26,6 +38,7 @@
+  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+  *
+  * Authors: Nathan Binkert
++ *          Mohammad Alian
+  */
+ 
+ #ifndef __SOCKET_HH__
+@@ -44,16 +57,55 @@
+   protected:
+     bool listening;
+     int fd;
++    /**
++     * Define an static fd variable. It will be used for all EtherTap devices
++     * instantiated in switch, then you don't need to occupy several ports in
++     * your system by creating so one socket per port
++     */
++    static int fdStatic;
+ 
+   public:
+     ListenSocket();
+     virtual ~ListenSocket();
+ 
+     virtual int accept(bool nodelay = false);
++    /**
++     * acceptTap accept incoming connection on fdStatic.
++     */
++    virtual int acceptTap(bool nodelay = false);
+     virtual bool listen(int port, bool reuse = true);
++    /**
++     * listenTap is called by the first instant of EtherTap.
++     * It initializes "fdStatic"
++     */
++    virtual bool listenTap(int port, bool reuse = true);
+ 
+     int getfd() const { return fd; }
++    int getfdStatic() const { return fdStatic; }
+     bool islistening() const { return listening; }
++    bool anyislistening() const { return anyListening; }
+ };
+ 
++/**
++ * Client socket class. EtherTap of pd-gem5 nodes should act as a client and
++ * connect to a corresponding EtherTap port of the switch.
++ * ConnectSocket vs. ListenSocket:
++ * ListenSocket is like a server connection
++ * ConnectSocket is like a client connection
++ */
++class ConnectSocket
++{
++  protected:
++    int fd;
++
++  public:
++    ConnectSocket();
++    virtual ~ConnectSocket();
++
++    virtual int connect(int port, const char* ip, bool nodelay = false);
++
++    int getfd() const { return fd; }
++};
++
++
+ #endif //__SOCKET_HH__
